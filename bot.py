@@ -19,12 +19,9 @@ BOT_PREFIX = '?'
 
 # Initialize bot with minimal intents to avoid privileged intent requirements
 intents = discord.Intents.default()
-intents.guilds = True
+intents.message_content = True
 intents.voice_states = True
-intents.messages = True
-# Remove message_content intent to avoid privileged intent error
-
-# Use commands.Bot with default intents to avoid privileged intent issues
+# Note: message_content is a privileged intent - enable it in your Discord Developer Portal for this bot application
 bot = commands.Bot(command_prefix=BOT_PREFIX, intents=intents, case_insensitive=True)
 
 # Global audio processor
