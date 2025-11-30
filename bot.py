@@ -35,21 +35,21 @@ async def on_ready():
     logger.info(f'{bot.user.name} has connected to Discord!')
     logger.info(f'Bot is in {len(bot.guilds)} servers')
 
-@bot.command(name='subjoin', help='Join the voice channel you are in')
+@bot.command(name='subbyjoin', help='Join the voice channel you are in')
 async def join_voice(ctx):
     """Join the voice channel of the user who called the command"""
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         try:
             await channel.connect(cls=voice_recv.VoiceRecvClient)
-            await ctx.send(f"Joined {channel.name}")
+            await ctx.send(f"by cioran 0 Joined {channel.name}")
             logger.info(f"Joined voice channel: {channel.name}")
         except discord.ClientException:
             await ctx.send("Already in a voice channel!")
     else:
         await ctx.send("You need to be in a voice channel to use this command!")
 
-@bot.command(name='subleave', help='Leave the current voice channel')
+@bot.command(name='subbyleave', help='Leave the current voice channel')
 async def leave_voice(ctx):
     """Leave the current voice channel"""
     if ctx.voice_client:
@@ -59,7 +59,7 @@ async def leave_voice(ctx):
     else:
         await ctx.send("I'm not in a voice channel!")
 
-@bot.command(name='start', help='Start transcribing audio in the voice channel')
+@bot.command(name='subbystart', help='Start transcribing audio in the voice channel')
 async def start_transcription(ctx):
     """Start transcribing audio from the voice channel"""
     if ctx.voice_client:
@@ -70,9 +70,9 @@ async def start_transcription(ctx):
             await ctx.send(f"❌ Error starting transcription: {str(e)}")
             logger.error(f"Error starting transcription: {e}")
     else:
-        await ctx.send("I need to be in a voice channel first! Use !subjoin")
+        await ctx.send("I need to be in a voice channel first! Use !subbyjoin")
 
-@bot.command(name='stop', help='Stop transcribing audio')
+@bot.command(name='subbystop', help='Stop transcribing audio')
 async def stop_transcription(ctx):
     """Stop transcribing audio"""
     if ctx.voice_client:
