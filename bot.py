@@ -42,7 +42,7 @@ async def join_voice(ctx):
         channel = ctx.author.voice.channel
         try:
             await channel.connect(cls=voice_recv.VoiceRecvClient)
-            await ctx.send(f"by cioran 0 Joined {channel.name}")
+            await ctx.send(f"by cioran0 Joined {channel.name}")
             logger.info(f"Joined voice channel: {channel.name}")
         except discord.ClientException:
             await ctx.send("Already in a voice channel!")

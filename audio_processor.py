@@ -163,13 +163,16 @@ class TranscriptionSink(voice_recv.AudioSink):
                     time_since_last = current_time - self.user_last_activity.get(user_id + '_last_utterance', 0)
                     is_new_utterance = time_since_last > self.silence_timeout
                     
-                    if is_new_utterance or not self.user_transcripts[user_id]:
-                        # Start new utterance
-                        self.user_transcripts[user_id] = text
-                        self.user_last_activity[user_id + '_last_utterance'] = current_time
+                    # Always accumulate to the main transcript
+                    if self.user_transcripts[user_id]:
+                        if is_new_utterance:
+                            self.user_transcripts[user_id] += ". " + text  # New sentence after pause
+                        else:
+                            self.user_transcripts[user_id] += " " + text  # Continue current sentence
                     else:
-                        # Continue current utterance
-                        self.user_transcripts[user_id] += " " + text
+                        self.user_transcripts[user_id] = text
+                    
+                    self.user_last_activity[user_id + '_last_utterance'] = current_time
                     
                     if user_id in self.user_messages:
                         # Edit the partial message to become final (just remove asterisk)
@@ -220,37 +223,54 @@ class TranscriptionSink(voice_recv.AudioSink):
         with self.cleanup_lock:
             logger.info("Cleaning up TranscriptionSink")
             
-                # Create transcript embed if there's any accumulated text
+            # Create transcript embed if there's any accumulated text
+            logger.info(f"Transcripts available: {list(self.user_transcripts.items())}")
             if any(self.user_transcripts.values()):
-                    import datetime
-                    
-                    embed = discord.Embed(
-                        title="📝 Complete Voice Transcript",
-                        color=discord.Color.blue(),
-                        timestamp=datetime.datetime.now()
-                    )
-                    
-                    # Add each user's transcript
-                    for user_id, transcript in self.user_transcripts.items():
-                        if transcript.strip():
-                            # Truncate if too long for embed field
-                            display_text = transcript.strip()
-                            if len(display_text) > 1024:
-                                display_text = display_text[:1021] + "..."
-                            
-                            embed.add_field(
-                                name=f"🎤 {self.user_names[user_id]}",
-                                value=display_text,
-                                inline=False
-                            )
-                    
-                    embed.set_footer(text="Session ended")
-                    
-                    # Send embed to channel
-                    coro = self.text_channel.send(embed=embed)
+                full_transcript_content = "\n\n".join([
+                    f"**{self.user_names[user_id]}**: {transcript.strip()}"
+                    for user_id, transcript in self.user_transcripts.items()
+                    if transcript.strip()
+                ])
+                bio = io.BytesIO(full_transcript_content.encode('utf-8'))
+                bio.seek(0)
+                transcript_file = discord.File(bio, filename='voice_transcript.txt')
+                
+                import datetime
+                logger.info("Creating transcript embed...")
+                
+                embed = discord.Embed(
+                    title="📝 Complete Voice Transcript (full in attached .txt)",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.datetime.now()
+                )
+                
+                # Add each user's transcript
+                for user_id, transcript in self.user_transcripts.items():
+                    if transcript.strip():
+                        # Truncate if too long for embed field
+                        display_text = transcript.strip()
+                        if len(display_text) > 1024:
+                            display_text = display_text[:1021] + "..."
+                        
+                        embed.add_field(
+                            name=f"🎤 {self.user_names[user_id]}",
+                            value=display_text,
+                            inline=False
+                        )
+                
+                embed.set_footer(text="Session ended")
+                
+                # Send embed + txt file to channel
+                try:
+                    coro = self.text_channel.send(embed=embed, file=transcript_file)
+                    future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+                    future.result(timeout=5)  # Wait for send to complete
+                    logger.info(f"Sent complete transcript embed with txt file successfully")
+                except Exception as e:
+                    logger.error(f"Error sending transcript embed: {e}")
+                    # Fallback: send transcript txt file
+                    coro = self.text_channel.send("📝 **Complete Voice Transcript** (see attached .txt)", file=transcript_file)
                     asyncio.run_coroutine_threadsafe(coro, self.loop)
-                    
-                    logger.info(f"Sent complete transcript embed")
             
             self.user_buffers.clear()
             self.user_recognizers.clear()
