@@ -9,9 +9,11 @@ import os
 import json
 import wave
 from discord.ext import commands
+from discord.ext import voice_recv
 import threading
 import queue
 import time
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ class AudioProcessor:
         await self.load_model()
         
         self.sink = TranscriptionSink(self.model, self.text_channel, asyncio.get_running_loop(), self.sample_rate)
-        await voice_client.receive(sink=self.sink)
+        voice_client.listen(self.sink)
         
         logger.info("Started transcription")
     
@@ -65,15 +67,16 @@ class AudioProcessor:
         if self.sink:
             self.sink.cleanup()
             self.sink = None
-        voice_client.stop_receiving()
+        voice_client.stop_listening()
         logger.info("Stopped transcription")
     
     
     
 
-class TranscriptionSink:
+class TranscriptionSink(voice_recv.AudioSink):
     """Custom audio sink for voice transcription"""
     def __init__(self, model, text_channel, loop, sample_rate):
+        super().__init__()
         self.model = model
         self.text_channel = text_channel
         self.loop = loop
@@ -81,11 +84,20 @@ class TranscriptionSink:
         self.user_buffers = {}
         self.user_recognizers = {}
         self.user_names = {}
-        self.chunk_size_48k = int(48000 * 5)  # 5 seconds at 48kHz mono
+        self.user_messages = {}  # Store message objects for editing
+        self.chunk_size_48k = int(48000 * 3)  # 3 seconds at 48kHz mono
         self.min_chunk_48k = int(48000 * 1)   # 1 second at 48kHz mono
         logger.info("TranscriptionSink initialized")
+    
+    def wants_opus(self):
+        """We want PCM data, not Opus"""
+        return False
 
     def write(self, user, data):
+        """Handle incoming audio data"""
+        if user is None:
+            return
+            
         user_id = str(user.id)
         if user_id not in self.user_names:
             self.user_names[user_id] = user.display_name
@@ -96,14 +108,20 @@ class TranscriptionSink:
 
         buffer = self.user_buffers[user_id]
 
+        # Get PCM data from VoiceData object
+        if hasattr(data, 'pcm') and data.pcm:
+            pcm_data = data.pcm
+        else:
+            return
+
         # Convert stereo 48kHz PCM to mono 48kHz
-        pcm = np.frombuffer(data, dtype=np.int16)
+        pcm = np.frombuffer(pcm_data, dtype=np.int16)
         if len(pcm) % 2 != 0:
             pcm = pcm[:-1]
         mono = pcm.reshape(-1, 2).mean(axis=1).astype(np.int16)
         buffer = np.append(buffer, mono)
 
-        # Process available chunks
+        # Process available chunks with overlap to avoid packet loss
         while len(buffer) >= self.min_chunk_48k:
             chunk_48k = buffer[:self.chunk_size_48k]
             # Simple decimation downsample to 16kHz (48kHz / 3 ≈ 16kHz)
@@ -115,19 +133,60 @@ class TranscriptionSink:
                 result = json.loads(recognizer.Result())
                 text = result.get('text', '').strip()
                 if text:
-                    coro = self.text_channel.send(f"🎤 **{self.user_names[user_id]}**: {text}")
-                    asyncio.run_coroutine_threadsafe(coro, self.loop)
+                    if user_id in self.user_messages:
+                        # Edit the partial message to become final
+                        coro = self.user_messages[user_id].edit(content=f"🎤 **{self.user_names[user_id]}**: {text}")
+                        asyncio.run_coroutine_threadsafe(coro, self.loop)
+                        del self.user_messages[user_id]  # Remove from tracking
+                    else:
+                        # Send new final message
+                        coro = self.text_channel.send(f"🎤 **{self.user_names[user_id]}**: {text}")
+                        asyncio.run_coroutine_threadsafe(coro, self.loop)
                     logger.info(f"Transcribed {self.user_names[user_id]}: {text}")
+            else:
+                # Get partial results for intermediate feedback
+                partial = json.loads(recognizer.PartialResult())
+                partial_text = partial.get('partial', '').strip()
+                if partial_text and len(partial_text) > 3:  # Only show meaningful partials
+                    if user_id in self.user_messages:
+                        # Edit existing message
+                        coro = self.user_messages[user_id].edit(content=f"🎤 **{self.user_names[user_id]}*: {partial_text}")
+                        asyncio.run_coroutine_threadsafe(coro, self.loop)
+                    else:
+                        # Create new message for partial
+                        coro = self.text_channel.send(f"🎤 **{self.user_names[user_id]}*: {partial_text}")
+                        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+                        try:
+                            self.user_messages[user_id] = future.result(timeout=2)
+                        except:
+                            pass
 
-            buffer = buffer[self.chunk_size_48k:]
+            # Use 50% overlap to avoid missing audio between chunks
+            buffer = buffer[self.chunk_size_48k // 2:]
 
+        # Limit buffer size to prevent memory buildup
+        max_buffer_size = self.chunk_size_48k * 4  # Keep max 8 seconds of audio
+        if len(buffer) > max_buffer_size:
+            buffer = buffer[-max_buffer_size:]
+        
         self.user_buffers[user_id] = buffer
 
     def cleanup(self):
         logger.info("Cleaning up TranscriptionSink")
+        # Finalize any remaining audio
+        for user_id, recognizer in self.user_recognizers.items():
+            if recognizer:
+                final_result = json.loads(recognizer.FinalResult())
+                text = final_result.get('text', '').strip()
+                if text:
+                    coro = self.text_channel.send(f"🎤 **{self.user_names[user_id]}**: {text}")
+                    asyncio.run_coroutine_threadsafe(coro, self.loop)
+                    logger.info(f"Final transcription {self.user_names[user_id]}: {text}")
+        
         self.user_buffers.clear()
         self.user_recognizers.clear()
         self.user_names.clear()
+        self.user_messages.clear()
 
     def idle(self):
         pass

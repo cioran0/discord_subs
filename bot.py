@@ -2,9 +2,11 @@ import discord
 import asyncio
 import logging
 from discord.ext import commands
+from discord.ext import voice_recv
 import os
 from dotenv import load_dotenv
 from audio_processor import AudioProcessor, download_vosk_model
+
 
 # Load environment variables
 load_dotenv()
@@ -39,7 +41,7 @@ async def join_voice(ctx):
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         try:
-            await channel.connect()
+            await channel.connect(cls=voice_recv.VoiceRecvClient)
             await ctx.send(f"Joined {channel.name}")
             logger.info(f"Joined voice channel: {channel.name}")
         except discord.ClientException:
