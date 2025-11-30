@@ -64,10 +64,19 @@ class AudioProcessor:
             return
         
         self.is_transcribing = False
+        
+        # Stop listening first to prevent new audio packets
+        voice_client.stop_listening()
+        
+        # Small delay to let existing packets finish processing
+        import asyncio
+        await asyncio.sleep(0.5)
+        
+        # Then cleanup the sink
         if self.sink:
             self.sink.cleanup()
             self.sink = None
-        voice_client.stop_listening()
+        
         logger.info("Stopped transcription")
     
     
@@ -85,8 +94,12 @@ class TranscriptionSink(voice_recv.AudioSink):
         self.user_recognizers = {}
         self.user_names = {}
         self.user_messages = {}  # Store message objects for editing
-        self.chunk_size_48k = int(48000 * 3)  # 3 seconds at 48kHz mono
-        self.min_chunk_48k = int(48000 * 1)   # 1 second at 48kHz mono
+        self.user_transcripts = {}  # Store accumulated transcripts
+        self.user_last_activity = {}  # Track last activity for timeout
+        self.chunk_size_48k = int(48000 * 1.5)  # 1.5 seconds at 48kHz mono (shorter for more frequent updates)
+        self.min_chunk_48k = int(48000 * 0.5)   # 0.5 seconds at 48kHz mono
+        self.cleanup_lock = threading.Lock()  # Thread safety for cleanup
+        self.silence_timeout = 2.0  # seconds of silence before treating as new utterance
         logger.info("TranscriptionSink initialized")
     
     def wants_opus(self):
@@ -97,14 +110,24 @@ class TranscriptionSink(voice_recv.AudioSink):
         """Handle incoming audio data"""
         if user is None:
             return
+        
+        # Check if cleanup is in progress
+        if self.cleanup_lock.locked():
+            return
             
         user_id = str(user.id)
+        
+        # Initialize user data if not exists
         if user_id not in self.user_names:
             self.user_names[user_id] = user.display_name
-
         if user_id not in self.user_buffers:
             self.user_buffers[user_id] = np.array([], dtype=np.int16)
+        if user_id not in self.user_recognizers:
             self.user_recognizers[user_id] = vosk.KaldiRecognizer(self.model, self.sample_rate)
+        if user_id not in self.user_transcripts:
+            self.user_transcripts[user_id] = ""  # Initialize transcript storage
+        if user_id not in self.user_last_activity:
+            self.user_last_activity[user_id] = time.time()
 
         buffer = self.user_buffers[user_id]
 
@@ -129,12 +152,27 @@ class TranscriptionSink(voice_recv.AudioSink):
             raw_bytes = chunk_16k.astype(np.int16).tobytes()
 
             recognizer = self.user_recognizers[user_id]
+            current_time = time.time()
+            self.user_last_activity[user_id] = current_time
+            
             if recognizer.AcceptWaveform(raw_bytes):
                 result = json.loads(recognizer.Result())
                 text = result.get('text', '').strip()
                 if text:
+                    # Check if this is a new utterance (after silence)
+                    time_since_last = current_time - self.user_last_activity.get(user_id + '_last_utterance', 0)
+                    is_new_utterance = time_since_last > self.silence_timeout
+                    
+                    if is_new_utterance or not self.user_transcripts[user_id]:
+                        # Start new utterance
+                        self.user_transcripts[user_id] = text
+                        self.user_last_activity[user_id + '_last_utterance'] = current_time
+                    else:
+                        # Continue current utterance
+                        self.user_transcripts[user_id] += " " + text
+                    
                     if user_id in self.user_messages:
-                        # Edit the partial message to become final
+                        # Edit the partial message to become final (just remove asterisk)
                         coro = self.user_messages[user_id].edit(content=f"🎤 **{self.user_names[user_id]}**: {text}")
                         asyncio.run_coroutine_threadsafe(coro, self.loop)
                         del self.user_messages[user_id]  # Remove from tracking
@@ -148,13 +186,20 @@ class TranscriptionSink(voice_recv.AudioSink):
                 partial = json.loads(recognizer.PartialResult())
                 partial_text = partial.get('partial', '').strip()
                 if partial_text and len(partial_text) > 3:  # Only show meaningful partials
+                    current_time = time.time()
+                    time_since_last = current_time - self.user_last_activity.get(user_id + '_last_utterance', 0)
+                    is_new_utterance = time_since_last > self.silence_timeout
+                    
+                    # For partials, show just the current text (not accumulated)
+                    display_text = partial_text
+                    
                     if user_id in self.user_messages:
                         # Edit existing message
-                        coro = self.user_messages[user_id].edit(content=f"🎤 **{self.user_names[user_id]}*: {partial_text}")
+                        coro = self.user_messages[user_id].edit(content=f"🎤 **{self.user_names[user_id]}*: {display_text}")
                         asyncio.run_coroutine_threadsafe(coro, self.loop)
                     else:
                         # Create new message for partial
-                        coro = self.text_channel.send(f"🎤 **{self.user_names[user_id]}*: {partial_text}")
+                        coro = self.text_channel.send(f"🎤 **{self.user_names[user_id]}*: {display_text}")
                         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
                         try:
                             self.user_messages[user_id] = future.result(timeout=2)
@@ -172,21 +217,47 @@ class TranscriptionSink(voice_recv.AudioSink):
         self.user_buffers[user_id] = buffer
 
     def cleanup(self):
-        logger.info("Cleaning up TranscriptionSink")
-        # Finalize any remaining audio
-        for user_id, recognizer in self.user_recognizers.items():
-            if recognizer:
-                final_result = json.loads(recognizer.FinalResult())
-                text = final_result.get('text', '').strip()
-                if text:
-                    coro = self.text_channel.send(f"🎤 **{self.user_names[user_id]}**: {text}")
+        with self.cleanup_lock:
+            logger.info("Cleaning up TranscriptionSink")
+            
+                # Create transcript embed if there's any accumulated text
+            if any(self.user_transcripts.values()):
+                    import datetime
+                    
+                    embed = discord.Embed(
+                        title="📝 Complete Voice Transcript",
+                        color=discord.Color.blue(),
+                        timestamp=datetime.datetime.now()
+                    )
+                    
+                    # Add each user's transcript
+                    for user_id, transcript in self.user_transcripts.items():
+                        if transcript.strip():
+                            # Truncate if too long for embed field
+                            display_text = transcript.strip()
+                            if len(display_text) > 1024:
+                                display_text = display_text[:1021] + "..."
+                            
+                            embed.add_field(
+                                name=f"🎤 {self.user_names[user_id]}",
+                                value=display_text,
+                                inline=False
+                            )
+                    
+                    embed.set_footer(text="Session ended")
+                    
+                    # Send embed to channel
+                    coro = self.text_channel.send(embed=embed)
                     asyncio.run_coroutine_threadsafe(coro, self.loop)
-                    logger.info(f"Final transcription {self.user_names[user_id]}: {text}")
-        
-        self.user_buffers.clear()
-        self.user_recognizers.clear()
-        self.user_names.clear()
-        self.user_messages.clear()
+                    
+                    logger.info(f"Sent complete transcript embed")
+            
+            self.user_buffers.clear()
+            self.user_recognizers.clear()
+            self.user_names.clear()
+            self.user_messages.clear()
+            self.user_transcripts.clear()
+            self.user_last_activity.clear()
 
     def idle(self):
         pass
