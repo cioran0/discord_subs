@@ -226,20 +226,11 @@ class TranscriptionSink(voice_recv.AudioSink):
             # Create transcript embed if there's any accumulated text
             logger.info(f"Transcripts available: {list(self.user_transcripts.items())}")
             if any(self.user_transcripts.values()):
-                full_transcript_content = "\n\n".join([
-                    f"**{self.user_names[user_id]}**: {transcript.strip()}"
-                    for user_id, transcript in self.user_transcripts.items()
-                    if transcript.strip()
-                ])
-                bio = io.BytesIO(full_transcript_content.encode('utf-8'))
-                bio.seek(0)
-                transcript_file = discord.File(bio, filename='voice_transcript.txt')
-                
                 import datetime
                 logger.info("Creating transcript embed...")
                 
                 embed = discord.Embed(
-                    title="📝 Complete Voice Transcript (full in attached .txt)",
+                    title="📝 Complete Voice Transcript",
                     color=discord.Color.blue(),
                     timestamp=datetime.datetime.now()
                 )
@@ -260,16 +251,21 @@ class TranscriptionSink(voice_recv.AudioSink):
                 
                 embed.set_footer(text="Session ended")
                 
-                # Send embed + txt file to channel
+                # Send embed to channel
                 try:
-                    coro = self.text_channel.send(embed=embed, file=transcript_file)
+                    coro = self.text_channel.send(embed=embed)
                     future = asyncio.run_coroutine_threadsafe(coro, self.loop)
                     future.result(timeout=5)  # Wait for send to complete
-                    logger.info(f"Sent complete transcript embed with txt file successfully")
+                    logger.info(f"Sent complete transcript embed successfully")
                 except Exception as e:
                     logger.error(f"Error sending transcript embed: {e}")
-                    # Fallback: send transcript txt file
-                    coro = self.text_channel.send("📝 **Complete Voice Transcript** (see attached .txt)", file=transcript_file)
+                    # Fallback: send as plain message
+                    fallback_text = "📝 **TRANSCRIPT:**\n" + "\n\n".join([
+                        f"**{self.user_names[user_id]}**: {transcript.strip()}" 
+                        for user_id, transcript in self.user_transcripts.items() 
+                        if transcript.strip()
+                    ])
+                    coro = self.text_channel.send(fallback_text)
                     asyncio.run_coroutine_threadsafe(coro, self.loop)
             
             self.user_buffers.clear()
