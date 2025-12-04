@@ -1,5 +1,5 @@
 discord.py>=2.0.0
-discord-ext-voice-recv>=0.5.0
+discord-ext-voice-recv==0.5.2a179
 python-dotenv>=1.0.0
 vosk>=0.3.45
 pydub>=0.25.1
