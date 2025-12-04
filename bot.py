@@ -35,6 +35,15 @@ async def on_ready():
     logger.info(f'{bot.user.name} has connected to Discord!')
     logger.info(f'Bot is in {len(bot.guilds)} servers')
 
+@bot.command(name='subby', help='Check if the bot is responsive')
+async def subby(ctx):
+    """Simple command to check if the bot is responsive"""
+    await ctx.send("🤖 Subby is online and ready to transcribe!")
+    await ctx.send("* ?subbyjoin joins user channel ")
+    await ctx.send("* ?subbystart starts transcription ")
+    await ctx.send("* ?subbystop stops transcription ")
+    await ctx.send("* ?subbyleave leaves the voice channel")
+
 @bot.command(name='subbyjoin', help='Join the voice channel you are in')
 async def join_voice(ctx):
     """Join the voice channel of the user who called the command"""
