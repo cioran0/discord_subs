@@ -43,6 +43,36 @@ async def subby(ctx):
     await ctx.send("* ?subbystart starts transcription ")
     await ctx.send("* ?subbystop stops transcription ")
     await ctx.send("* ?subbyleave leaves the voice channel")
+    await ctx.send("* ?subbynotranscript disables transcript file creation for this run")
+    await ctx.send("* ?subbytranscript re-enables transcript file creation for this run")
+
+@bot.command(name='subbynotranscript', help='Turn off transcription file creation after stopping')
+async def subbynotranscript(ctx):
+    """Disable transcription file creation after stopping (for this bot run)"""
+    # Disable globally for any new sinks
+    audio_processor.enable_file_creation = False
+    # Also disable on the current sink, if one is active
+    if audio_processor.sink is not None:
+        try:
+            audio_processor.sink.enable_file_creation = False
+        except AttributeError:
+            pass
+    await ctx.send("Transcription file creation has been disabled for this run. No transcript files will be created after stopping transcription.")
+    logger.info("Transcription file creation disabled by user.")
+
+@bot.command(name='subbytranscript', help='Re-enable transcription file creation after stopping')
+async def subbytranscript(ctx):
+    """Enable transcription file creation after stopping (for this bot run)"""
+    # Enable globally for any new sinks
+    audio_processor.enable_file_creation = True
+    # Also enable on the current sink, if one is active
+    if audio_processor.sink is not None:
+        try:
+            audio_processor.sink.enable_file_creation = True
+        except AttributeError:
+            pass
+    await ctx.send("Transcription file creation has been enabled for this run. Transcript files will be created after stopping transcription.")
+    logger.info("Transcription file creation enabled by user.")
 
 @bot.command(name='subbyjoin', help='Join the voice channel you are in')
 async def join_voice(ctx):

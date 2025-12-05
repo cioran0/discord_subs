@@ -26,6 +26,8 @@ class AudioProcessor:
         self.is_transcribing = False
         self.text_channel = None
         self.sink = None
+        # Controls whether a summary transcript file is created on stop
+        self.enable_file_creation = True
         
     async def load_model(self):
         """Load the Vosk model asynchronously"""
@@ -53,7 +55,14 @@ class AudioProcessor:
         self.text_channel = text_channel
         await self.load_model()
         
-        self.sink = TranscriptionSink(self.model, self.text_channel, asyncio.get_running_loop(), self.sample_rate)
+        # Pass current file-creation preference into the sink
+        self.sink = TranscriptionSink(
+            self.model,
+            self.text_channel,
+            asyncio.get_running_loop(),
+            self.sample_rate,
+            enable_file_creation=self.enable_file_creation,
+        )
         voice_client.listen(self.sink)
         
         logger.info("Started transcription")
@@ -84,12 +93,14 @@ class AudioProcessor:
 
 class TranscriptionSink(voice_recv.AudioSink):
     """Custom audio sink for voice transcription"""
-    def __init__(self, model, text_channel, loop, sample_rate):
+    def __init__(self, model, text_channel, loop, sample_rate, enable_file_creation=True):
         super().__init__()
         self.model = model
         self.text_channel = text_channel
         self.loop = loop
         self.sample_rate = sample_rate
+        # Whether to create and send a summary transcript file on cleanup
+        self.enable_file_creation = enable_file_creation
         self.user_buffers = {}
         self.user_recognizers = {}
         self.user_names = {}
@@ -223,9 +234,9 @@ class TranscriptionSink(voice_recv.AudioSink):
         with self.cleanup_lock:
             logger.info("Cleaning up TranscriptionSink")
             
-            # Create transcript file if there's any accumulated text
+            # Create transcript file if enabled and there's any accumulated text
             logger.info(f"Transcripts available: {list(self.user_transcripts.items())}")
-            if any(self.user_transcripts.values()):
+            if self.enable_file_creation and any(self.user_transcripts.values()):
                 import datetime
                 logger.info("Creating transcript file...")
                 
